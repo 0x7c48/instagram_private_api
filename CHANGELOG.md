@@ -1,5 +1,39 @@
 # Change Log
 
+## 1.6.0
+- Web API:
+    * Add ``highlight_reels()`` and ``highlight_reel_media()``
+    * Add ``tagged_user_feed()``
+    * Add ``tag_story_feed()`` and ``location_story_feed()``
+    * Update query hashes
+    * Fix for case sensitivity for tag feed
+    * Add ``delete_media()``
+    * Add ``proxy_handler`` kwarg to support custom proxy handler such as socks
+- App API:
+    * :fire: __BREAKING CHANGE__: Change in user agent format for the app version
+    * :fire: __BREAKING CHANGE__: Change in argument list for ``search_users()``
+    * Add IGTV endpoints
+    * Update ``media_n_comments()``, ``search_users()``, ``news()``
+    * ``feed_location()`` deprecated
+    * Add ``kwargs`` to ``news()`` for paging support
+    * Add ``tag_section()`` and ``location_section()`` endpoints
+    * Add ``proxy_handler`` kwarg to support custom proxy handler such as socks
+
+## 1.5.7
+- Web API:
+    * Improve cookie expiry detection
+- App API:
+    * Make change to cookiejar (in 1.5.6) backward compatible
+
+## 1.5.6
+- Web API:
+    * Add ``media_likers()``
+    * Fix ``user_info2()``
+    * Fix csrf token extraction
+- App API:
+    * Fix client authentication expiry
+    * Improve get cookie value
+
 ## 1.5.5
 - Web API:
     * Fix for changes in the ``X-Instagram-GIS`` signed header requirement

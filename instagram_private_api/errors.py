@@ -66,7 +66,7 @@ class ClientCheckpointRequiredError(ClientError):
     def challenge_url(self):
         try:
             error_info = json.loads(self.error_response)
-            return error_info.get('challenge', {}).get('url')
+            return error_info.get('challenge', {}).get('url') or error_info.get('checkpoint_url')
         except ValueError as ve:
             logger.warning('Error parsing error response: {}'.format(str(ve)))
         return None
@@ -87,7 +87,7 @@ class ErrorHandler(object):
         {'patterns': ['bad_password', 'invalid_user'], 'error': ClientLoginError},
         {'patterns': ['login_required'], 'error': ClientLoginRequiredError},
         {
-            'patterns': ['checkpoint_required', 'checkpoint_challenge_required'],
+            'patterns': ['checkpoint_required', 'checkpoint_challenge_required', 'checkpoint_logged_out'],
             'error': ClientCheckpointRequiredError
         },
         {'patterns': ['challenge_required'], 'error': ClientChallengeRequiredError},
@@ -131,7 +131,5 @@ class ErrorHandler(object):
         except ValueError as ve:
             # do nothing else, prob can't parse json
             logger.warning('Error parsing error response: {}'.format(str(ve)))
-        except ClientError:
-            raise
 
         raise ClientError(error_msg, http_error.code, error_response)

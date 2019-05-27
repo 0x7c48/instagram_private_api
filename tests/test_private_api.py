@@ -13,7 +13,8 @@ from .private import (
     LocationTests, MediaTests, MiscTests,
     TagsTests, UploadTests, UsersTests,
     UsertagsTests, HighlightsTests,
-    ClientTests, ApiUtilsTests, CompatPatchTests
+    ClientTests, ApiUtilsTests, CompatPatchTests,
+    IGTVTests,
 )
 from .common import (
     Client, ClientError, ClientLoginError, ClientCookieExpiredError,
@@ -24,7 +25,7 @@ from .common import (
 if __name__ == '__main__':
 
     warnings.simplefilter('ignore', UserWarning)
-    logging.basicConfig(format='%(name)s %(message)s')
+    logging.basicConfig(format='%(name)s %(message)s', stream=sys.stdout)
     logger = logging.getLogger('instagram_private_api')
     logger.setLevel(logging.WARNING)
 
@@ -135,6 +136,7 @@ if __name__ == '__main__':
     tests.extend(UsersTests.init_all(api))
     tests.extend(UsertagsTests.init_all(api))
     tests.extend(HighlightsTests.init_all(api))
+    tests.extend(IGTVTests.init_all(api))
 
     tests.extend(ClientTests.init_all(api))
     tests.extend(CompatPatchTests.init_all(api))

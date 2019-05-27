@@ -1,9 +1,15 @@
+---
+name: Bug Report
+about: Report an error or problem
+
+---
+
 ## Please follow the guide below
 
 - Issues submitted without this template format will be **ignored**.
 - Please read the questions **carefully** and answer completely.
 - Do not post screenshots of error messages or code.
-- Put an `x` into all the boxes [ ] relevant to your issue (==> [x] *no* spaces).
+- Put an `x` into all the boxes [ ] relevant to your issue (==> [x] *NO* spaces).
 - Use the *Preview* tab to see how your issue will actually look like.
 - Issues about reverse engineering is out of scope and will be closed without response.
 - Any mention of spam-like actions or spam-related tools/libs/etc is strictly **not allowed**.
@@ -22,11 +28,11 @@
 
 ---
 
-### Describe your issue
+### Describe the Bug/Error:
 
 Please make sure the description is worded well enough to be understood with as much context and examples as possible.
 
-If describing a problem or a bug, code to replicate the issue *must* be provided below.
+Code to replicate the error must be provided below.
 
 ---
 

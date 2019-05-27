@@ -7,6 +7,10 @@ FAQ
    :local:
    :backlinks: top
 
+Can I create accounts with this library?
+----------------------------------------
+No. This library will not support account creation because of abuse by spammers. If you need an account, use the official app or website.
+
 Can I _____ with this library?
 ---------------------------------
 
@@ -57,3 +61,11 @@ There are no plans to implement direct messaging/sharing functions.
 What does ``sentry_block`` error mean?
 --------------------------------------
 This is the response for detected spam/bot behavior. Stop using the api in whatever way that triggered this reponse.
+
+Why are the captions not posted?
+--------------------------------
+This is due to your account / access location (IP) being soft-blocked.
+
+What does ``checkpoint_challenge_required``, ``challenge_required`` mean?
+-------------------------------------------------------------------------
+Your access attempt has been flagged. Login manually to pass the required challenge.

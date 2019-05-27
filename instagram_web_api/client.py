@@ -26,7 +26,8 @@ from .compat import (
 from .compatpatch import ClientCompatPatch
 from .errors import (
     ClientError, ClientLoginError, ClientCookieExpiredError,
-    ClientConnectionError
+    ClientConnectionError, ClientBadRequestError,
+    ClientForbiddenError, ClientThrottledError,
 )
 try:  # Python 3:
     # Not a no-op, we're adding this to the namespace so it can be imported.
@@ -55,8 +56,8 @@ class Client(object):
 
     API_URL = 'https://www.instagram.com/query/'
     GRAPHQL_API_URL = 'https://www.instagram.com/graphql/query/'
-    USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_1) AppleWebKit/604.3.5 (KHTML, like Gecko) Version/11.0.1 Safari/604.3.5'    # noqa
-    MOBILE_USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 11_1 like Mac OS X) AppleWebKit/604.3.5 (KHTML, like Gecko) Version/11.0 Mobile/15B93 Safari/604.1'     # noqa
+    USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/11.1.2 Safari/605.1.15'      # noqa
+    MOBILE_USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 11_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/11.0 Mobile/15E148 Safari/604.1'  # noqa
 
     def __init__(self, user_agent=None, **kwargs):
         """
@@ -75,6 +76,7 @@ class Client(object):
             - **settings**: A dict of settings from a previous session
             - **on_login**: Callback after successful login
             - **proxy**: Specify a proxy ex: 'http://127.0.0.1:8888' (ALPHA)
+            - **proxy_handler**: Specify your own proxy handler
         :return:
         """
         self.auto_patch = kwargs.pop('auto_patch', False)
@@ -89,37 +91,42 @@ class Client(object):
         self.mobile_user_agent = (kwargs.pop('mobile_user_agent', None)
                                   or user_settings.get('mobile_user_agent')
                                   or self.MOBILE_USER_AGENT)
+
+        self.init_csrftoken = None
         self.rhx_gis = kwargs.pop('rhx_gis', None) or user_settings.get('rhx_gis')
+        self.rollout_hash = '1'
 
         cookie_string = kwargs.pop('cookie', None) or user_settings.get('cookie')
         cookie_jar = ClientCookieJar(cookie_string=cookie_string)
-        if cookie_string and cookie_jar.expires_earliest and int(time.time()) >= cookie_jar.expires_earliest:
-            raise ClientCookieExpiredError('Oldest cookie expired at {0!s}'.format(cookie_jar.expires_earliest))
+        if cookie_string and cookie_jar.auth_expires and int(time.time()) >= cookie_jar.auth_expires:
+            raise ClientCookieExpiredError('Cookie expired at {0!s}'.format(cookie_jar.auth_expires))
+        cookie_handler = compat_urllib_request.HTTPCookieProcessor(cookie_jar)
 
-        custom_ssl_context = kwargs.pop('custom_ssl_context', None)
-        proxy_handler = None
-        proxy = kwargs.pop('proxy', None)
-        if proxy:
-            warnings.warn('Proxy support is alpha.', UserWarning)
-            parsed_url = compat_urllib_parse_urlparse(proxy)
-            if parsed_url.netloc and parsed_url.scheme:
-                proxy_address = '{0!s}://{1!s}'.format(parsed_url.scheme, parsed_url.netloc)
-                proxy_handler = compat_urllib_request.ProxyHandler({'https': proxy_address})
-            else:
-                raise ValueError('Invalid proxy argument: {0!s}'.format(proxy))
+        proxy_handler = kwargs.pop('proxy_handler', None)
+        if not proxy_handler:
+            proxy = kwargs.pop('proxy', None)
+            if proxy:
+                warnings.warn('Proxy support is alpha.', UserWarning)
+                parsed_url = compat_urllib_parse_urlparse(proxy)
+                if parsed_url.netloc and parsed_url.scheme:
+                    proxy_address = '{0!s}://{1!s}'.format(parsed_url.scheme, parsed_url.netloc)
+                    proxy_handler = compat_urllib_request.ProxyHandler({'https': proxy_address})
+                else:
+                    raise ValueError('Invalid proxy argument: {0!s}'.format(proxy))
         handlers = []
         if proxy_handler:
             handlers.append(proxy_handler)
-        cookie_handler = compat_urllib_request.HTTPCookieProcessor(cookie_jar)
+
+        custom_ssl_context = kwargs.pop('custom_ssl_context', None)
         try:
-            httpshandler = compat_urllib_request.HTTPSHandler(context=custom_ssl_context)
+            https_handler = compat_urllib_request.HTTPSHandler(context=custom_ssl_context)
         except TypeError:
             # py version < 2.7.9
-            httpshandler = compat_urllib_request.HTTPSHandler()
+            https_handler = compat_urllib_request.HTTPSHandler()
 
         handlers.extend([
             compat_urllib_request.HTTPHandler(),
-            httpshandler,
+            https_handler,
             cookie_handler])
         opener = compat_urllib_request.build_opener(*handlers)
         opener.cookie_jar = cookie_jar
@@ -144,7 +151,7 @@ class Client(object):
     @property
     def csrftoken(self):
         """The client's current csrf token"""
-        return self.get_cookie_value('csrftoken')
+        return self.get_cookie_value('csrftoken') or self.init_csrftoken
 
     @property
     def authenticated_user_id(self):
@@ -229,7 +236,7 @@ class Client(object):
                 headers.update({
                     'x-csrftoken': self.csrftoken,
                     'x-requested-with': 'XMLHttpRequest',
-                    'x-instagram-ajax': '1',
+                    'x-instagram-ajax': self.rollout_hash,
                     'Referer': 'https://www.instagram.com',
                     'Authority': 'www.instagram.com',
                     'Origin': 'https://www.instagram.com',
@@ -268,16 +275,24 @@ class Client(object):
             self.logger.debug('RES HEADERS: {0!s}'.format(
                 [u'{}: {}'.format(k, v) for k, v in res.info().items()]
             ))
+
             if return_response:
                 return res
 
             response_content = self._read_response(res)
-
             self.logger.debug('RES BODY: {0!s}'.format(response_content))
             return json.loads(response_content)
 
         except compat_urllib_error.HTTPError as e:
-            raise ClientError('HTTPError "{0!s}" while opening {1!s}'.format(e.reason, url), e.code)
+            msg = 'HTTPError "{0!s}" while opening {1!s}'.format(e.reason, url)
+            if e.code == 400:
+                raise ClientBadRequestError(msg, e.code)
+            elif e.code == 403:
+                raise ClientForbiddenError(msg, e.code)
+            elif e.code == 429:
+                raise ClientThrottledError(msg, e.code)
+            raise ClientError(msg, e.code)
+
         except (SSLError, timeout, SocketError,
                 compat_urllib_error.URLError,   # URLError is base of HTTPError
                 compat_http_client.HTTPException,
@@ -302,13 +317,57 @@ class Client(object):
         tmp_str = ':{"id":"'+f'{random.randint(10000000,99999999)}'+'"}'
         return hashlib.md5(tmp_str.encode()).hexdigest()
 
+    @staticmethod
+    def _extract_csrftoken(html):
+        mobj = re.search(
+            r'"csrf_token":"(?P<csrf_token>[A-Za-z0-9]+)"', html, re.MULTILINE)
+
+        if mobj:
+            return mobj.group('csrf_token')
+        return None
+
+    @staticmethod
+    def _extract_rollout_hash(html):
+        mobj = re.search(
+            r'"rollout_hash":"(?P<rollout_hash>[A-Za-z0-9]+)"', html, re.MULTILINE)
+
+        if mobj:
+            return mobj.group('rollout_hash')
+        return None
+
+    def _init_rollout_hash(self):
+        """Call before any POST call to make sure we get the rollout hash"""
+        if self.rollout_hash == '1':
+            # rollout hash not yet retrieved
+            self.init()
+
     def init(self):
         """Make a GET request to get the first csrf token and rhx_gis"""
+
+        # try to emulate cookies consent
+        self.cookie_jar.set_cookie(
+            compat_cookiejar.Cookie(
+                0, 'ig_cb', '1', None, False,
+                'www.instagram.com', False, None, '/',
+                False, False, None, True, None, None, {})
+        )
+
         init_res = self._make_request(
             'https://www.instagram.com/', return_response=True, get_method=lambda: 'GET')
         init_res_content = self._read_response(init_res)
+        self.logger.debug('RES BODY: {0!s}'.format(init_res_content))
+
         rhx_gis = self._extract_rhx_gis(init_res_content)
         self.rhx_gis = rhx_gis
+
+        rollout_hash = self._extract_rollout_hash(init_res_content)
+        if rollout_hash:
+            self.rollout_hash = rollout_hash
+
+        if not self.csrftoken:
+            csrftoken = self._extract_csrftoken(init_res_content)
+            self.init_csrftoken = csrftoken
+
         if not self.csrftoken:
             raise ClientError('Unable to get csrf from init request.')
         if not self.rhx_gis:
@@ -326,6 +385,7 @@ class Client(object):
         if not self.username or not self.password:
             raise ClientError('username/password is blank')
         params = {'username': self.username, 'password': self.password, 'queryParams': '{}'}
+        self._init_rollout_hash()
         login_res = self._make_request('https://www.instagram.com/accounts/login/ajax/', params=params)
         if not login_res.get('status', '') == 'ok' or not login_res.get('authenticated'):
             raise ClientLoginError('Unable to login')
@@ -347,9 +407,10 @@ class Client(object):
             'This endpoint is obsolete. Do not use.', ClientDeprecationWarning)
 
         params = {
-            'q': 'ig_user(%(user_id)s) {id, username, full_name, profile_pic_url, '
+            'q': 'ig_user({user_id}) {{id, username, full_name, profile_pic_url, '
                  'biography, external_url, is_private, is_verified, '
-                 'media {count}, followed_by {count}, follows {count} }' % {'user_id': user_id},
+                 'media {{count}}, followed_by {{count}}, '
+                 'follows {{count}} }}'.format(**{'user_id': user_id}),
         }
         user = self._make_request(self.API_URL, params=params)
 
@@ -413,12 +474,13 @@ class Client(object):
         if end_cursor:
             variables['after'] = end_cursor
         query = {
-            'query_hash': '42323d64886122307be10013ad2dcc44',
+            'query_hash': 'e7e2f4da4b02303f74f0841279e52d76',
             'variables': json.dumps(variables, separators=(',', ':'))
         }
         info = self._make_request(self.GRAPHQL_API_URL, query=query)
 
-        if not info.get('data', {}).get('user'):
+        if not info.get('data', {}).get('user') or \
+                not info.get('data', {}).get('user', {}).get('edge_owner_to_timeline_media', {}).get('count', 0):
             # non-existent accounts do not return media at all
             # private accounts return media with just a count, no nodes
             raise ClientError('Not Found', 404)
@@ -445,13 +507,14 @@ class Client(object):
             'This endpoint is obsolete. Do not use.', ClientDeprecationWarning)
 
         params = {
-            'q': 'ig_shortcode(%(media_code)s) { caption, code, comments {count}, date, '
-                 'dimensions {height, width}, comments_disabled, '
-                 'usertags {nodes {x, y, user {id, username, full_name, profile_pic_url} }}, '
-                 'location {id, name, lat, lng}, display_src, id, is_video, is_ad, '
-                 'likes {count}, owner {id, username, full_name, profile_pic_url, '
-                 'is_private, is_verified}, __typename, '
-                 'thumbnail_src, video_views, video_url }' % {'media_code': short_code}
+            'q': 'ig_shortcode({media_code}) {{ caption, code, comments {{count}}, date, '
+                 'dimensions {{height, width}}, comments_disabled, '
+                 'usertags {{nodes {{x, y, user {{id, username, full_name, profile_pic_url}} }} }}, '
+                 'location {{id, name, lat, lng}}, display_src, id, is_video, is_ad, '
+                 'likes {{count}}, owner {{id, username, full_name, profile_pic_url, '
+                 'is_private, is_verified}}, __typename, '
+                 'thumbnail_src, video_views, video_url }}'.format(
+                     **{'media_code': short_code})
         }
         media = self._make_request(self.API_URL, params=params)
         if not media.get('code'):
@@ -510,7 +573,7 @@ class Client(object):
         if end_cursor:
             variables['after'] = end_cursor
         query = {
-            'query_hash': '33ba35852cb50da46f5b5e889df7d159',
+            'query_hash': 'f0986789a5c5d17c2400faebf16efd0d',
             'variables': json.dumps(variables, separators=(',', ':'))
         }
 
@@ -559,7 +622,7 @@ class Client(object):
         if end_cursor:
             variables['after'] = end_cursor
         query = {
-            'query_hash': '1cb6ec562846122743b61e492c85999f',
+            'query_hash': 'e0f59e4a1c8d78d0161873bc2ee7ec44',
             'variables': json.dumps(variables, separators=(',', ':'))
         }
 
@@ -600,7 +663,7 @@ class Client(object):
             variables['after'] = end_cursor
 
         query = {
-            'query_hash': '58712303d941c6855d4e888c5f0cd22f',
+            'query_hash': 'c56ee0ae1f89cdbd1c89e2bc6b8f3d18',
             'variables': json.dumps(variables, separators=(',', ':'))
         }
 
@@ -640,7 +703,7 @@ class Client(object):
             variables['after'] = end_cursor
 
         query = {
-            'query_hash': '37479f2b8209594dde7facb0d904896a',
+            'query_hash': '7dd9a7e2160524fd85f50317462cff9f',
             'variables': json.dumps(variables, separators=(',', ':'))
         }
 
@@ -668,6 +731,7 @@ class Client(object):
         """
         media_id = self._sanitise_media_id(media_id)
         endpoint = 'https://www.instagram.com/web/likes/{media_id!s}/like/'.format(**{'media_id': media_id})
+        self._init_rollout_hash()
         res = self._make_request(endpoint, params='')
         return res
 
@@ -684,6 +748,23 @@ class Client(object):
         """
         media_id = self._sanitise_media_id(media_id)
         endpoint = 'https://www.instagram.com/web/likes/{media_id!s}/unlike/'.format(**{'media_id': media_id})
+        self._init_rollout_hash()
+        return self._make_request(endpoint, params='')
+
+    @login_required
+    def delete_media(self, media_id):
+        """
+        Delete an update. Login required.
+
+        :param media_id: Media id
+        :return:
+            .. code-block:: javascript
+
+                {"did_delete": true, "status": "ok"}
+        """
+        media_id = self._sanitise_media_id(media_id)
+        endpoint = 'https://www.instagram.com/create/{media_id!s}/delete/'.format(**{'media_id': media_id})
+        self._init_rollout_hash()
         return self._make_request(endpoint, params='')
 
     @login_required
@@ -698,6 +779,7 @@ class Client(object):
                 {"status": "ok", "result": "following"}
         """
         endpoint = 'https://www.instagram.com/web/friendships/{user_id!s}/follow/'.format(**{'user_id': user_id})
+        self._init_rollout_hash()
         return self._make_request(endpoint, params='')
 
     @login_required
@@ -712,6 +794,7 @@ class Client(object):
                 {"status": "ok"}
         """
         endpoint = 'https://www.instagram.com/web/friendships/{user_id!s}/unfollow/'.format(**{'user_id': user_id})
+        self._init_rollout_hash()
         return self._make_request(endpoint, params='')
 
     @login_required
@@ -749,6 +832,7 @@ class Client(object):
         media_id = self._sanitise_media_id(media_id)
         endpoint = 'https://www.instagram.com/web/comments/{media_id!s}/add/'.format(**{'media_id': media_id})
         params = {'comment_text': comment_text}
+        self._init_rollout_hash()
         return self._make_request(endpoint, params=params)
 
     @login_required
@@ -766,6 +850,7 @@ class Client(object):
         media_id = self._sanitise_media_id(media_id)
         endpoint = 'https://www.instagram.com/web/comments/{media_id!s}/delete/{comment_id!s}/'.format(**{
             'media_id': media_id, 'comment_id': comment_id})
+        self._init_rollout_hash()
         return self._make_request(endpoint, params='')
 
     def search(self, query_text):
@@ -792,6 +877,8 @@ class Client(object):
         """
         warnings.warn('This endpoint has not been fully tested.', UserWarning)
 
+        self._init_rollout_hash()
+
         upload_id = int(time.time() * 1000)
         boundary = '----WebKitFormBoundary{}'.format(
             ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(16)))
@@ -812,7 +899,7 @@ class Client(object):
             'Connection': 'close',
             'x-csrftoken': self.csrftoken,
             'x-requested-with': 'XMLHttpRequest',
-            'x-instagram-ajax': '1',
+            'x-instagram-ajax': self.rollout_hash,
             'Origin': 'https://www.instagram.com',
             'Referer': 'https://www.instagram.com/create/crop/',
             'Content-Type': content_type,
@@ -838,7 +925,12 @@ class Client(object):
             endpoint = 'https://www.instagram.com/create/configure/'
             res = self._make_request(
                 endpoint, headers=headers,
-                params={'upload_id': upload_id, 'caption': caption},
+                params={
+                    'upload_id': upload_id,
+                    'caption': caption,
+                    'retry_timeout': '',
+                    'custom_accessibility_caption': '',
+                },
                 get_method=lambda: 'POST')
             return res
 
@@ -862,13 +954,14 @@ class Client(object):
         end_cursor = kwargs.pop('end_cursor', None) or kwargs.pop('max_id', None)
 
         variables = {
-            'tag_name': tag,
-            'first': int(count)
+            'tag_name': tag.lower(),
+            'first': int(count),
+            'show_ranked': False,
         }
         if end_cursor:
             variables['after'] = end_cursor
         query = {
-            'query_hash': 'ded47faa9a1aaded10161a2ff32abb6b',
+            'query_hash': 'f92f56d47dc7a55b606908374b43a314',
             'variables': json.dumps(variables, separators=(',', ':'))
         }
 
@@ -898,7 +991,7 @@ class Client(object):
             variables['after'] = end_cursor
 
         query = {
-            'query_hash': 'ac38b90f0f3981c42092016a37c59bf7',
+            'query_hash': '1b84447a4d8b6d6d0426fefb34514485',
             'variables': json.dumps(variables, separators=(',', ':'))
         }
 
@@ -930,7 +1023,7 @@ class Client(object):
         if end_cursor:
             variables['fetch_media_item_cursor'] = end_cursor
         query = {
-            'query_hash': '485c25657308f08317c1e4b967356828',
+            'query_hash': '3f01472fb28fb8aca9ad9dbc9d4578ff',
             'variables': json.dumps(variables, separators=(',', ':'))
         }
         return self._make_request(self.GRAPHQL_API_URL, query=query)
@@ -946,6 +1039,22 @@ class Client(object):
         }
         return self._make_request(self.GRAPHQL_API_URL, query=query)
 
+    def _story_feed(self, reel_ids=[], tag_names=[], location_ids=[]):
+        variables = {
+            'reel_ids': reel_ids,
+            'tag_names': tag_names,
+            'location_ids': location_ids,
+            'precomposed_overlay': False,
+            'show_story_viewer_list': True,
+            'story_viewer_fetch_count': 50,
+            'story_viewer_cursor': '',
+        }
+        query = {
+            'query_hash': 'eb1918431e946dd39bf8cf8fb870e426',
+            'variables': json.dumps(variables, separators=(',', ':'))
+        }
+        return self._make_request(self.GRAPHQL_API_URL, query=query)
+
     @login_required
     def reels_feed(self, reel_ids, **kwargs):
         """
@@ -953,10 +1062,41 @@ class Client(object):
 
         :param reel_ids: List of reel user IDs
         """
+        return self._story_feed(
+            reel_ids=reel_ids, tag_names=kwargs.pop('tag_names', []),
+            location_ids=kwargs.pop('location_ids', []))
+
+    @login_required
+    def highlight_reels(self, user_id):
+        """
+        Get the highlights for the specified user ID
+
+        :param user_id:
+        """
         variables = {
-            'reel_ids': reel_ids,
-            'tag_names': kwargs.pop('tag_names', []),
-            'location_ids': kwargs.pop('location_ids', []),
+            'user_id': user_id,
+            'include_chaining': True,
+            'include_reel': True,
+            'include_suggested_users': False,
+            'include_logged_out_extras': False,
+            'include_highlight_reels': True,
+        }
+        query = {
+            'query_hash': '7c16654f22c819fb63d1183034a5162f',
+            'variables': json.dumps(variables, separators=(',', ':'))
+        }
+        return self._make_request(self.GRAPHQL_API_URL, query=query)
+
+    def highlight_reel_media(self, highlight_reel_ids):
+        """
+        Get medias for the specified highlight IDs
+
+        :param highlight_reel_ids: List of highlight reel IDs
+        """
+        variables = {
+            'highlight_reel_ids': highlight_reel_ids,
+            'reel_ids': [],
+            'location_ids': [],
             'precomposed_overlay': False,
         }
         query = {
@@ -964,3 +1104,55 @@ class Client(object):
             'variables': json.dumps(variables, separators=(',', ':'))
         }
         return self._make_request(self.GRAPHQL_API_URL, query=query)
+
+    def tagged_user_feed(self, user_id, **kwargs):
+        """
+        Get the tagged feed for the specified user ID
+
+        :param user_id:
+        """
+        count = kwargs.pop('count', 12)
+        if count > 50:
+            raise ValueError('count cannot be greater than 50')
+
+        end_cursor = kwargs.pop('end_cursor', None) or kwargs.pop('max_id', None)
+
+        variables = {
+            'id': user_id,
+            'first': int(count),
+        }
+        if end_cursor:
+            variables['after'] = end_cursor
+        query = {
+            'query_hash': 'ff260833edf142911047af6024eb634a',
+            'variables': json.dumps(variables, separators=(',', ':'))
+        }
+        info = self._make_request(self.GRAPHQL_API_URL, query=query)
+
+        if not info.get('data', {}).get('user'):
+            # non-existent accounts do not return media at all
+            # private accounts return media with just a count, no nodes
+            raise ClientError('Not Found', 404)
+
+        if self.auto_patch:
+            [ClientCompatPatch.media(media['node'], drop_incompat_keys=self.drop_incompat_keys)
+             for media in info.get('data', {}).get('user', {}).get(
+                 'edge_user_to_photos_of_you', {}).get('edges', [])]
+
+        return info
+
+    def tag_story_feed(self, tag, **kwargs):
+        """
+        Get the stories feed for the specified tag
+
+        :param location_id:
+        """
+        return self._story_feed(tag_names=[tag])
+
+    def location_story_feed(self, location_id, **kwargs):
+        """
+        Get the stories feed for the specified location ID
+
+        :param location_id:
+        """
+        return self._story_feed(location_ids=[location_id])

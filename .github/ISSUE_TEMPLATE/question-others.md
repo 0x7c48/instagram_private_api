@@ -1,7 +1,13 @@
+---
+name: Question/Others
+about: Not an error or feature request
+
+---
+
 ## Please follow the guide below
 
 - Issues submitted without this template format will be **ignored**.
-- Please read the questions **carefully** and answer completely.
+- Rlease read them **carefully** and answer completely.
 - Do not post screenshots of error messages or code.
 - Put an `x` into all the boxes [ ] relevant to your issue (==> [x] *no* spaces).
 - Use the *Preview* tab to see how your issue will actually look like.
@@ -22,11 +28,9 @@
 
 ---
 
-### Describe your issue
+### Describe your Question/Issue:
 
 Please make sure the description is worded well enough to be understood with as much context and examples as possible.
-
-If describing a problem or a bug, code to replicate the issue *must* be provided below.
 
 ---
 
