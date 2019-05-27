@@ -298,7 +298,9 @@ class Client(object):
             r'"rhx_gis":"(?P<rhx_gis>[a-f0-9]{32})"', html, re.MULTILINE)
         if mobj:
             return mobj.group('rhx_gis')
-        return None
+
+        tmp_str = ':{"id":"'+f'{random.randint(10000000,99999999)}'+'"}'
+        return hashlib.md5(tmp_str.encode()).hexdigest()
 
     def init(self):
         """Make a GET request to get the first csrf token and rhx_gis"""
