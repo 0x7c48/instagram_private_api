@@ -258,6 +258,12 @@ class Client(object):
                 data = ''.encode('ascii')
             else:
                 data = compat_urllib_parse.urlencode(params).encode('ascii')
+
+        curl_headers = " ".join(["-H '%s: %s'" % (k, v) for k, v in headers.items()])
+        curl_cookie = "; ".join(['%s=%s' % (c.name, c.value) for c in self.cookie_jar])
+        curl = "\n curl -X{0} {1} {2} -H 'Cookie: {3}' --data '{4}' \n".format(req.get_method(), url, curl_headers, curl_cookie, data or '')
+        self.logger.debug(curl)
+
         try:
             self.logger.debug('REQUEST: {0!s} {1!s}'.format(url, req.get_method()))
             self.logger.debug('REQ HEADERS: {0!s}'.format(
